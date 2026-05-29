@@ -1,0 +1,199 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  ASSISTANT
+  CLINIC
+  ADMIN
+}
+
+enum AssistantTier {
+  RDA // Registered Dental Assistant
+  DA  // Dental Assistant
+}
+
+enum DentalSoftware {
+  OPEN_DENTAL
+  DENTRIX
+  EAGLESOFT
+  CURVE_DENTAL
+  CARESTREAM
+  OTHER
+}
+
+enum JobType {
+  TEMP
+  PERMANENT
+}
+
+enum JobStatus {
+  OPEN
+  FILLED
+  CANCELLED
+  EXPIRED
+}
+
+enum MatchStatus {
+  PENDING     // bid submitted, awaiting clinic response
+  ACCEPTED    // clinic accepted the bid
+  DECLINED    // clinic declined the bid
+  CLOCKED_IN
+  CLOCKED_OUT
+  PLACED      // permanent hire confirmed
+  CANCELLED
+}
+
+// ─── Core auth ────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         Role
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  assistantProfile AssistantProfile?
+  clinicProfile    ClinicProfile?
+  reviewsGiven     Review[]          @relation("ReviewAuthor")
+  reviewsReceived  Review[]          @relation("ReviewTarget")
+}
+
+// ─── Profiles ─────────────────────────────────────────────────────────────────
+
+model AssistantProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tier            AssistantTier
+  software        DentalSoftware[] // PostgreSQL native array
+  travelRadius    Int              // miles
+  hourlyRate      Decimal          @db.Decimal(8, 2)
+  openToPermanent Boolean          @default(false)
+
+  // Weekly availability matrix stored as JSON.
+  // Shape: { "MON": ["09:00-17:00"], "WED": ["09:00-13:00"], ... }
+  // Omitted days mean unavailable.
+  availability Json @default("{}")
+
+  bio      String?
+  yearsExp Int?
+
+  matches Match[]
+}
+
+model ClinicProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  companyName String
+  phone       String?
+  website     String?
+
+  locations   ClinicLocation[]
+  jobPostings JobPosting[]
+}
+
+model ClinicLocation {
+  id       String        @id @default(cuid())
+  clinicId String
+  clinic   ClinicProfile @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  name    String? // e.g. "Downtown Branch"
+  country String  @default("US")
+  street  String
+  city    String?  // optional for city-states like Singapore
+  state   String?  // not applicable in all countries (e.g. Singapore)
+  postal  String  // ZIP (US) or postal code (SG: 6 digits)
+  lat     Float?  // populated via geocoding for radius matching
+  lng     Float?
+
+  jobPostings JobPosting[]
+}
+
+// ─── Job Postings ─────────────────────────────────────────────────────────────
+
+model JobPosting {
+  id         String         @id @default(cuid())
+  clinicId   String
+  clinic     ClinicProfile  @relation(fields: [clinicId], references: [id])
+  locationId String
+  location   ClinicLocation @relation(fields: [locationId], references: [id])
+
+  type   JobType
+  status JobStatus @default(OPEN)
+  slots  Int       @default(1)
+
+  // All jobs use hourlyRate; salary is retained for historical data only
+  hourlyRate Decimal? @db.Decimal(8, 2)
+  salary     Decimal? @db.Decimal(10, 2) // @deprecated — no longer populated
+
+  requiredTier     AssistantTier?
+  requiredSoftware DentalSoftware[]
+
+  // Only populated for TEMP postings
+  shiftStart DateTime?
+  shiftEnd   DateTime?
+
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  matches Match[]
+}
+
+// ─── Matching ─────────────────────────────────────────────────────────────────
+
+model Match {
+  id          String           @id @default(cuid())
+  jobId       String
+  job         JobPosting       @relation(fields: [jobId], references: [id])
+  assistantId String
+  assistant   AssistantProfile @relation(fields: [assistantId], references: [id])
+
+  status  MatchStatus @default(PENDING)
+  bidRate Decimal?    @db.Decimal(8, 2) // assistant's proposed rate for TEMP bids
+
+  // TEMP shift lifecycle
+  clockedInAt  DateTime?
+  clockedOutAt DateTime?
+
+  // PERMANENT placement lifecycle
+  placedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reviews Review[]
+
+  @@unique([jobId, assistantId]) // one bid per assistant per posting
+}
+
+// ─── Reviews ──────────────────────────────────────────────────────────────────
+
+model Review {
+  id       String @id @default(cuid())
+  matchId  String
+  match    Match  @relation(fields: [matchId], references: [id])
+  authorId String
+  author   User   @relation("ReviewAuthor", fields: [authorId], references: [id])
+  targetId String
+  target   User   @relation("ReviewTarget", fields: [targetId], references: [id])
+
+  rating  Int     // 1–5
+  comment String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([matchId, authorId]) // one review per direction per match
+}
