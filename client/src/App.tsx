@@ -7,6 +7,7 @@ import RegisterPage from './pages/RegisterPage';
 import JobsPage from './pages/JobsPage';
 import ClinicDashboard from './pages/ClinicDashboard';
 import AssistantDashboard from './pages/AssistantDashboard';
+import SwipePage from './pages/SwipePage';
 
 function ProtectedRoute({ children, role }: { children: JSX.Element; role?: string }) {
   const { user, loading } = useAuth();
@@ -32,6 +33,7 @@ function AppRoutes() {
           <Route path="/dashboard/assistant" element={
             <ProtectedRoute role="ASSISTANT"><AssistantDashboard /></ProtectedRoute>
           } />
+          <Route path="/explore" element={<SwipePage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

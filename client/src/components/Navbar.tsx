@@ -19,6 +19,9 @@ export default function Navbar() {
         <Link to="/jobs" className="text-gray-600 hover:text-blue-600 text-sm font-medium">
           Browse Jobs
         </Link>
+        <Link to="/explore" className="text-sm font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-full transition-colors">
+          ✦ Explore
+        </Link>
         {user ? (
           <>
             {user.role === 'CLINIC' && (
