@@ -1,12 +1,87 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { SwipeCardHandle } from '../components/SwipeCard';
 import SwipeCard from '../components/SwipeCard';
-import type { MockJobCard, MockAssistantCard } from '../utils/mockTestData';
-import {
-  MOCK_JOB_CARDS, MOCK_ASSISTANT_CARDS,
-  softwareLabel,
-} from '../utils/mockTestData';
+import type { MockJobCard, MockAssistantCard, AvailSlot } from '../utils/mockTestData';
+import { softwareLabel } from '../utils/mockTestData';
+import api from '../lib/api';
+
+// ── API → Card transformers ───────────────────────────────────────────────────
+
+const TEMP_COLORS  = ['#f97316','#ef4444','#f59e0b','#ec4899','#8b5cf6'];
+const PERM_COLORS  = ['#22c55e','#10b981','#06b6d4','#3b82f6','#6366f1'];
+const ASST_COLORS  = ['#8b5cf6','#06b6d4','#f43f5e','#10b981','#f59e0b','#6366f1','#0ea5e9','#ec4899','#14b8a6','#a855f7'];
+
+function extractName(email: string): { displayName: string; initials: string } {
+  const local = email.split('@')[0];
+  const parts = local.split(/[.\-_]/);
+  const first = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+  const last  = parts[1] ? parts[1].charAt(0).toUpperCase() + '.' : '';
+  return {
+    displayName: last ? `${first} ${last}` : first,
+    initials: (first[0] + (last[0] ?? first[1] ?? '')).toUpperCase(),
+  };
+}
+
+function convertAvailability(dbAvail: Record<string, string[]>): MockAssistantCard['availability'] {
+  const DAYS = ['MON','TUE','WED','THU','FRI','SAT','SUN'] as const;
+  const out: Record<string, AvailSlot> = {};
+  for (const d of DAYS) {
+    const slots: string[] = (dbAvail as Record<string, string[]>)[d] ?? [];
+    if (!slots.length) { out[d] = 'off'; continue; }
+    const [startStr, endStr] = slots[0].split('-');
+    const sh = parseInt(startStr, 10);
+    const eh = parseInt(endStr,   10);
+    out[d] = eh <= 12 ? 'am' : sh >= 12 ? 'pm' : 'full';
+  }
+  return out as MockAssistantCard['availability'];
+}
+
+function apiJobToCard(job: any, idx: number): MockJobCard {
+  const isTemp = job.type === 'TEMP';
+  let shiftDate: string | undefined, shiftHours: string | undefined, shiftDuration: string | undefined;
+  if (isTemp && job.shiftStart) {
+    const s = new Date(job.shiftStart), e = new Date(job.shiftEnd);
+    shiftDate     = s.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    shiftHours    = `${s.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} – ${e.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+    const hrs     = (e.getTime() - s.getTime()) / 3_600_000;
+    shiftDuration = `${hrs % 1 === 0 ? hrs : hrs.toFixed(1)} hrs`;
+  }
+  return {
+    id:          job.id,
+    type:        job.type,
+    clinicName:  job.clinic.companyName,
+    address:     job.location.street ?? '',
+    city:        job.location.city ?? '',
+    state:       job.location.state ?? '',
+    country:     job.location.country,
+    hourlyRate:  parseFloat(job.hourlyRate ?? job.salary ?? 0),
+    requiredTier: job.requiredTier ?? null,
+    software:    job.requiredSoftware ?? [],
+    shiftDate, shiftHours, shiftDuration,
+    description: job.description ?? '',
+    slots:       job.slots,
+    accentColor: (isTemp ? TEMP_COLORS : PERM_COLORS)[idx % 5],
+  };
+}
+
+function apiAssistantToCard(profile: any, idx: number): MockAssistantCard {
+  const { displayName, initials } = extractName(profile.user?.email ?? 'user@example.com');
+  return {
+    id:             profile.id,
+    displayName,
+    initials,
+    accentColor:    ASST_COLORS[idx % ASST_COLORS.length],
+    tier:           profile.tier,
+    yearsExp:       profile.yearsExp ?? 0,
+    hourlyRate:     parseFloat(profile.hourlyRate),
+    travelRadius:   profile.travelRadius,
+    software:       profile.software ?? [],
+    availability:   convertAvailability((profile.availability as Record<string, string[]>) ?? {}),
+    openToPermanent: profile.openToPermanent,
+    bio:            profile.bio ?? 'No bio provided.',
+  };
+}
 
 type Persona = 'ASSISTANT' | 'CLINIC';
 type SwipedCard = MockJobCard | MockAssistantCard;
@@ -600,15 +675,34 @@ function EmptyDeck({ persona, onReset }: { persona: Persona; onReset: () => void
 // ── Swipe Deck ────────────────────────────────────────────────────────────────
 function SwipeDeck({ persona }: { persona: Persona }) {
   const isAssistant = persona === 'ASSISTANT';
-  const initialCards = isAssistant
-    ? [...MOCK_JOB_CARDS]
-    : [...MOCK_ASSISTANT_CARDS];
 
-  const [deck, setDeck] = useState<(MockJobCard | MockAssistantCard)[]>(initialCards);
+  const [deck, setDeck] = useState<(MockJobCard | MockAssistantCard)[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [matchedCard, setMatchedCard] = useState<SwipedCard | null>(null);
   const [detailCard, setDetailCard] = useState<SwipedCard | null>(null);
   const [lastAction, setLastAction] = useState<'left' | 'right' | null>(null);
   const topCardRef = useRef<SwipeCardHandle>(null);
+
+  const loadCards = useCallback(async () => {
+    setLoading(true);
+    setFetchError(null);
+    try {
+      if (isAssistant) {
+        const res = await api.get('/jobs?status=OPEN&limit=50');
+        setDeck(res.data.data.map(apiJobToCard));
+      } else {
+        const res = await api.get('/assistants?limit=50');
+        setDeck(res.data.data.map(apiAssistantToCard));
+      }
+    } catch (e: any) {
+      setFetchError(e.response?.data?.error ?? 'Failed to load — is the server running?');
+    } finally {
+      setLoading(false);
+    }
+  }, [isAssistant]);
+
+  useEffect(() => { loadCards(); }, [loadCards]);
 
   const handleSwipe = useCallback((dir: 'left' | 'right', card: SwipedCard) => {
     setLastAction(dir);
@@ -616,21 +710,35 @@ function SwipeDeck({ persona }: { persona: Persona }) {
     setTimeout(() => setDeck((prev) => prev.slice(1)), 50);
   }, []);
 
-  const reset = () => {
-    setDeck(initialCards);
-    setLastAction(null);
-  };
+  const reset = () => { setLastAction(null); loadCards(); };
 
   const triggerLeft  = () => topCardRef.current?.swipeLeft();
   const triggerRight = () => topCardRef.current?.swipeRight();
 
-  const isEmpty = deck.length === 0;
+  const isEmpty = !loading && !fetchError && deck.length === 0;
 
   return (
     <div className="flex flex-col items-center w-full h-full">
       {/* Deck area */}
       <div className="relative w-full max-w-sm" style={{ height: '520px' }}>
-        {isEmpty ? (
+        {loading ? (
+          <div className="flex flex-col items-center justify-center h-full gap-4">
+            <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            <p className="text-sm text-gray-400">Loading {isAssistant ? 'jobs' : 'talent'}…</p>
+          </div>
+        ) : fetchError ? (
+          <motion.div
+            className="flex flex-col items-center justify-center h-full text-center px-8 gap-4"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+          >
+            <div className="text-5xl">⚠️</div>
+            <p className="text-sm text-red-500 font-medium">{fetchError}</p>
+            <button onClick={loadCards}
+              className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-2xl">
+              Retry
+            </button>
+          </motion.div>
+        ) : isEmpty ? (
           <EmptyDeck persona={persona} onReset={reset} />
         ) : (
           <>

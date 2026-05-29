@@ -15,6 +15,25 @@ const PROFILE_USER_SELECT = { id: true, email: true, role: true, createdAt: true
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
+// GET /api/assistants — list all profiles (paginated)
+router.get('/', async (req: AuthRequest, res: Response) => {
+  const q = req.query as Record<string, string | undefined>;
+  const page  = Math.max(1, parseInt(q.page  ?? '1',  10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(q.limit ?? '20', 10) || 20));
+
+  const [data, total] = await Promise.all([
+    prisma.assistantProfile.findMany({
+      include: { user: { select: PROFILE_USER_SELECT } },
+      orderBy: { hourlyRate: 'asc' },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.assistantProfile.count(),
+  ]);
+
+  res.json({ data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+});
+
 // GET /api/assistants/:userId
 router.get('/:userId', async (req: AuthRequest, res: Response) => {
   const { userId } = req.params as Record<string, string>;

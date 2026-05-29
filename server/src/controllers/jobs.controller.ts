@@ -121,7 +121,7 @@ export async function listJobs(req: Request, res: Response): Promise<void> {
     prisma.jobPosting.findMany({
       where,
       include: {
-        location: { select: { id: true, name: true, city: true, state: true, postal: true, country: true } },
+        location: { select: { id: true, name: true, street: true, city: true, state: true, postal: true, country: true } },
         clinic:   { select: { id: true, companyName: true } },
         _count:   { select: { matches: true } },
       },
