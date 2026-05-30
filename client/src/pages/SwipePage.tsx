@@ -1,10 +1,12 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import type { SwipeCardHandle } from '../components/SwipeCard';
 import SwipeCard from '../components/SwipeCard';
 import type { MockJobCard, MockAssistantCard, AvailSlot } from '../utils/mockTestData';
 import { softwareLabel } from '../utils/mockTestData';
 import api from '../lib/api';
+import { useAuth } from '../context/AuthContext';
 
 // ── API → Card transformers ───────────────────────────────────────────────────
 
@@ -343,11 +345,36 @@ function DetailSheet({
   );
 }
 
+type ApplyState = 'idle' | 'loading' | 'applied' | 'already' | 'no-profile' | 'error';
+
 function JobDetail({ card, onClose }: { card: MockJobCard; onClose: () => void }) {
   const isTemp = card.type === 'TEMP';
   const locationLine = [card.city, card.state, card.country && card.country !== 'US' ? card.country : '']
     .filter(Boolean).join(', ');
-  const [applied, setApplied] = useState(false);
+
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [applyState, setApplyState] = useState<ApplyState>('idle');
+  const [errMsg, setErrMsg] = useState('');
+
+  const handleApply = async () => {
+    if (!user) { navigate('/login'); return; }
+    setApplyState('loading');
+    try {
+      const payload: Record<string, unknown> = { jobId: card.id };
+      if (isTemp) payload.bidRate = card.hourlyRate;
+      await api.post('/matches', payload);
+      setApplyState('applied');
+    } catch (e: any) {
+      const msg: string = e.response?.data?.error ?? 'Something went wrong';
+      if (e.response?.status === 409) { setApplyState('already'); return; }
+      if (msg.toLowerCase().includes('profile')) { setApplyState('no-profile'); return; }
+      setErrMsg(msg);
+      setApplyState('error');
+    }
+  };
+
+  const notAssistant = !!user && user.role !== 'ASSISTANT';
 
   return (
     <>
@@ -427,18 +454,60 @@ function JobDetail({ card, onClose }: { card: MockJobCard; onClose: () => void }
           <p className="text-sm text-gray-600 leading-relaxed">{card.description}</p>
         </div>
 
+        {/* TEMP bid note */}
+        {isTemp && !notAssistant && applyState === 'idle' && (
+          <p className="text-xs text-gray-400 text-center -mb-2">
+            Bid at posted rate · ${card.hourlyRate}/hr
+          </p>
+        )}
+
+        {/* Error banner */}
+        {applyState === 'error' && (
+          <p className="text-xs text-red-500 bg-red-50 rounded-xl px-3 py-2 text-center">{errMsg}</p>
+        )}
+
         {/* CTA */}
-        <button
-          onClick={() => setApplied(true)}
-          disabled={applied}
-          className={`w-full py-3.5 rounded-2xl font-bold text-sm transition-all mt-1 mb-2 ${
-            applied
-              ? 'bg-emerald-100 text-emerald-700 cursor-default'
-              : 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-200 active:scale-[0.98]'
-          }`}
-        >
-          {applied ? '✓ Application Sent!' : 'Apply Now'}
-        </button>
+        {!user && (
+          <button
+            onClick={() => navigate('/login')}
+            className="w-full py-3.5 rounded-2xl font-bold text-sm bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-200 active:scale-[0.98] transition-all mt-1 mb-2"
+          >
+            Log in to Apply
+          </button>
+        )}
+
+        {notAssistant && (
+          <button
+            disabled
+            className="w-full py-3.5 rounded-2xl font-bold text-sm bg-gray-100 text-gray-400 cursor-not-allowed mt-1 mb-2"
+          >
+            Assistants only
+          </button>
+        )}
+
+        {user && !notAssistant && (
+          <button
+            onClick={applyState === 'no-profile' ? () => navigate('/dashboard/assistant') : handleApply}
+            disabled={applyState === 'loading' || applyState === 'applied' || applyState === 'already'}
+            className={`w-full py-3.5 rounded-2xl font-bold text-sm transition-all mt-1 mb-2 ${
+              applyState === 'applied'
+                ? 'bg-emerald-100 text-emerald-700 cursor-default'
+                : applyState === 'already'
+                ? 'bg-blue-50 text-blue-600 cursor-default'
+                : applyState === 'no-profile'
+                ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-lg shadow-amber-200 active:scale-[0.98]'
+                : applyState === 'loading'
+                ? 'bg-emerald-400 text-white cursor-wait opacity-80'
+                : 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-200 active:scale-[0.98]'
+            }`}
+          >
+            {applyState === 'applied'  ? '✓ Application Sent!'
+           : applyState === 'already'  ? '✓ Already Applied'
+           : applyState === 'no-profile' ? 'Create Profile to Apply →'
+           : applyState === 'loading'  ? 'Applying…'
+           : 'Apply Now'}
+          </button>
+        )}
       </div>
     </>
   );
