@@ -146,8 +146,14 @@ model JobPosting {
   shiftEnd   DateTime?
 
   description String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+
+  // External job ingestion
+  isExternal     Boolean @default(false)
+  externalSource String? // e.g. 'Indeed', 'LinkedIn', 'ZipRecruiter'
+  originalUrl    String? @unique // used for idempotent re-ingestion
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   matches Match[]
 }
